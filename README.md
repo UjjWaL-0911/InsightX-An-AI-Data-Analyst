@@ -1,4 +1,4 @@
-##🤖InsightX : Data Analysis Agent 🤖
+## 🤖InsightX : Data Analysis Agent 🤖
 
 An intelligent data analysis agent powered by Mixtral-8x7B that helps you analyze datasets, generate visualizations, and provide insights through natural language interaction.
 
