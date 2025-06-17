@@ -1,10 +1,11 @@
+from pathlib import Path
+
 import pandas as pd
 import PyPDF2
 from docx import Document
-import pytesseract
+
 from PIL import Image
-import os
-from pathlib import Path
+import pytesseract
 
 class FileProcessor:
     def __init__(self):
@@ -12,7 +13,7 @@ class FileProcessor:
         self.data = None
         self.file_info = {}
     
-    def process_file(self, file_path):
+    def process_file(self, file_path):   #MAIN FILE PROCESSOR FUNCTION
         """Main file processing function"""
         file_path = Path(file_path)
         
@@ -62,7 +63,7 @@ class FileProcessor:
                 'type': 'dataframe',
                 'data': df,
                 'shape': df.shape,
-                'columns': list(df.columns),
+                'columns': list(df.columns),#conversion to list bcz return type of df.columns is pandas.Index
                 'summary': df.describe().to_dict()
             }
             
@@ -103,9 +104,9 @@ class FileProcessor:
                 'type': 'text',
                 'data': text,
                 'word_count': len(text.split()),
-                **metadata
-            }
-            
+                **metadata  #** is a dictionary unpacking operatorIt takes all key-value pairs
+            }               #from metadata dict which varies based on file-type and adds them directly into the
+                            #returned dictionary    
         except Exception as e:
             raise Exception(f"Text processing failed: {str(e)}")
     

@@ -32,8 +32,8 @@ if os.path.exists(env_path):
 
 #Context Management System
 class ContextManager:
-    """Manages conversation history and dataset state"""
-
+    """Manages context and state for the agent"""
+    
     @dataclass
     class DatasetState:
         filename: str
@@ -41,253 +41,164 @@ class ContextManager:
         shape: Tuple[int, int]
         data_types: Dict[str, str]
         loaded_at: datetime
-        
+    
     def __init__(self):
-        self.conversation_history = deque(maxlen=50)
+        self.session_id = str(uuid.uuid4())
         self.current_dataset = None
         self.current_data = None
-        self.dataset_registry = {}
-        self.session_id = str(uuid.uuid4())[:8]
+        self.conversation_history = []
+        self.dataset_states = {}
     
     def register_dataset(self, filepath: str, file_info: Dict[str, Any]) -> str:
-        """Register new dataset in agent memory"""
-        filename = os.path.basename(filepath)
-        
-        # Create dataset state
-        dataset_state = self.DatasetState(
-            filename=filename,
-            columns=file_info['columns'] if file_info['type'] == 'dataframe' else ['content'],
-            shape=file_info['shape'] if file_info['type'] == 'dataframe' else (1, 1),
-            data_types={col: str(file_info['data'][col].dtype) for col in file_info['columns']} if file_info['type'] == 'dataframe' else {'content': 'text'},
-            loaded_at=datetime.now()
-        )
-        
-        # Store dataset state and data
-        self.dataset_registry[filename] = dataset_state
+        """Register a new dataset"""
         self.current_dataset = filepath
         self.current_data = file_info['data']
         
-        return filename
+        # Store dataset state
+        self.dataset_states[filepath] = self.DatasetState(
+            filename=filepath,
+            columns=list(file_info['data'].columns),
+            shape=file_info['data'].shape,
+            data_types=file_info['data'].dtypes.astype(str).to_dict(),
+            loaded_at=datetime.now()
+        )
+        
+        return f"Dataset registered: {filepath}"
     
-    def add_conversation(self, user_query: str, agent_response: str, intent: str):
-        """Add conversation to memory"""
+    def add_conversation(self, user_query: str, agent_response: str):
+        """Add a conversation turn to history"""
         self.conversation_history.append({
-            'timestamp': datetime.now(),
+            'timestamp': datetime.now().isoformat(),
             'user_query': user_query,
-            'agent_response': agent_response,
-            'intent': intent,
-            'dataset_context': self.current_dataset or "None"
+            'agent_response': agent_response
         })
     
     def get_current_context(self) -> Dict[str, Any]:
-        """Get current dataset and conversation context"""
-        context = {
-            'session_id': self.session_id,
-            'current_dataset': self.current_dataset,
+        """Get current context information"""
+        if not self.current_dataset:
+            return {}
+        
+        return {
+            'dataset': self.current_dataset,
+            'state': self.dataset_states.get(self.current_dataset),
             'conversation_count': len(self.conversation_history)
         }
-        
-        if self.current_dataset in self.dataset_registry:
-            dataset = self.dataset_registry[self.current_dataset]
-            context['dataset_info'] = {
-                'filename': dataset.filename,
-                'shape': dataset.shape,
-                'columns': dataset.columns
-            }
-        
-        context['recent_conversations'] = list(self.conversation_history)[-3:]
-        return context
     
     def save_session(self, filepath: str = None):
-        """Save session state with unique filename"""
-        if filepath is None:
-            session_num = 1
-            while os.path.exists(os.path.join("Saved_Sessions", f"session_state{session_num}.pkl")):
-                session_num += 1
-            filepath = os.path.join("Saved_Sessions", f"session_state{session_num}.pkl")
+        """Save current session state"""
+        if not filepath:
+            filepath = f"session_{self.session_id}.json"
         
-        with open(filepath, 'wb') as f:
-            pickle.dump({
-                'conversation_history': list(self.conversation_history),
-                'dataset_registry': self.dataset_registry,
-                'current_dataset': self.current_dataset,
-                'session_id': self.session_id
-            }, f)
-        print(f"Session saved as: {filepath}")
+        session_data = {
+            'session_id': self.session_id,
+            'current_dataset': self.current_dataset,
+            'conversation_history': self.conversation_history,
+            'dataset_states': {
+                k: {
+                    'filename': v.filename,
+                    'columns': v.columns,
+                    'shape': v.shape,
+                    'data_types': v.data_types,
+                    'loaded_at': v.loaded_at.isoformat()
+                }
+                for k, v in self.dataset_states.items()
+            }
+        }
+        
+        with open(filepath, 'w') as f:
+            json.dump(session_data, f, indent=2)
     
     def load_session(self, filepath: str = None):
-        """Load session state"""
-        if filepath is None:
-            session_files = [f for f in os.listdir("Saved_Sessions") if f.startswith("session_state") and f.endswith(".pkl")]
-            if not session_files:
-                print("No previous session found. Starting fresh.")
-                return
-            session_files.sort(key=lambda x: int(''.join(filter(str.isdigit, x))))
-            filepath = os.path.join("Saved_Sessions", session_files[-1])
+        """Load session state from file"""
+        if not filepath:
+            return
         
-        with open(filepath, 'rb') as f:
-            data = pickle.load(f)
-            self.conversation_history = deque(data.get('conversation_history', []), maxlen=50)
-            self.dataset_registry = data.get('dataset_registry', {})
-            self.current_dataset = data.get('current_dataset')
-            self.session_id = data.get('session_id', self.session_id)
-        print(f"Loaded session from: {filepath}")
-
-
-#Intent Classification Engine
-class IntentType(Enum):
-    """Possible user intents"""
-    DATA_ANALYSIS = "data_analysis"
-    VISUALIZATION = "visualization"
-    QUESTION_ANSWER = "question_answer"
-    COMPARISON = "comparison"
-    FILTERING = "filtering"
-    CORRELATION = "correlation"
-    TREND_ANALYSIS = "trend_analysis"
-    SUMMARY = "summary"
-    OUTLIER_DETECTION = "outlier_detection"
-    EXPORT = "export"
-    HELP = "help"
-    FILE_UPLOAD = "file_upload"
-    UNCLEAR = "unclear"
-
-class IntentClassifier:
-    """Intent classification and query preprocessing"""
-    
-    def __init__(self, context_manager: ContextManager):
-        self.context_manager = context_manager
-        self.intent_patterns = {
-            IntentType.DATA_ANALYSIS: [r'\b(analyz|stats|mean|insights)\b'],
-            IntentType.VISUALIZATION: [r'\b(plot|chart|graph|visualiz)\b'],
-            IntentType.QUESTION_ANSWER: [r'\b(what|how|why|when|where)\b', r'\?'],
-            IntentType.COMPARISON: [r'\b(compar|vs|differ|between)\b'],
-            IntentType.FILTERING: [r'\b(filter|where|select|subset)\b'],
-            IntentType.CORRELATION: [r'\b(correlat|relationship|related)\b'],
-            IntentType.TREND_ANALYSIS: [r'\b(trend|pattern|over time)\b'],
-            IntentType.SUMMARY: [r'\b(summary|overview|brief)\b'],
-            IntentType.OUTLIER_DETECTION: [r'\b(outlier|anomal|unusual)\b'],
-            IntentType.EXPORT: [r'\b(export|download|save)\b'],
-            IntentType.HELP: [r'\b(help|assist|guide)\b']
+        with open(filepath, 'r') as f:
+            session_data = json.load(f)
+        
+        self.session_id = session_data['session_id']
+        self.current_dataset = session_data['current_dataset']
+        self.conversation_history = session_data['conversation_history']
+        
+        # Reconstruct dataset states
+        self.dataset_states = {
+            k: self.DatasetState(
+                filename=v['filename'],
+                columns=v['columns'],
+                shape=tuple(v['shape']),
+                data_types=v['data_types'],
+                loaded_at=datetime.fromisoformat(v['loaded_at'])
+            )
+            for k, v in session_data['dataset_states'].items()
         }
-    
-    def classify_intent(self, query: str) -> Tuple[IntentType, float]:
-        """Classify user intent with confidence score"""
-        query_lower = query.lower()
-        intent_scores = {}
-        
-        for intent, patterns in self.intent_patterns.items():
-            score = sum(len(re.findall(pattern, query_lower)) for pattern in patterns)
-            if score > 0:
-                intent_scores[intent] = score / len(query.split())
-        
-        if intent_scores:
-            best_intent = max(intent_scores.items(), key=lambda x: x[1])
-            return best_intent[0], min(best_intent[1] * 2, 1.0)
-        
-        return IntentType.UNCLEAR, 0.0
-    
-    def generate_context_prompt(self, query: str, intent: IntentType) -> str:
-        """Create contextual prompt for LLM"""
-        context = self.context_manager.get_current_context()
-        prompt = f"User Query: {query}\nDetected Intent: {intent.value}\n\n"
-        
-        if 'dataset_info' in context:
-            dataset = context['dataset_info']
-            prompt += f"Dataset: {dataset['filename']}\n"
-            prompt += f"Shape: {dataset['shape']}\n"
-            prompt += f"Columns: {', '.join(dataset['columns'])}\n"
-        
-        if context['recent_conversations']:
-            prompt += "\nRecent Conversations:\n"
-            for conv in context['recent_conversations']:
-                prompt += f"- {conv['user_query']} ({conv['intent']})\n"
-        
-        return prompt
 
 
 #LLM Integration
 class LLMInterface:
-    """Interface to Together.ai Llama model"""
+    """Interface for interacting with the LLM"""
     
     def __init__(self, api_key: str, context_manager: ContextManager):
-        self.client = Together(api_key=api_key)
-        self.model_name = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
-        self.max_tokens = 2048
-        self.temperature = 0.7
-        self.max_retries = 5
-        self.initial_retry_delay = 1
+        self.api_key = api_key
         self.context_manager = context_manager
-        
+        self.client = Together(api_key=api_key)
+    
     def generate_response(self, prompt: str, system_prompt: str = None) -> str:
-        """Generate response using LLM with retry logic"""
-        for attempt in range(self.max_retries):
-            try:
-                messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
-                messages.append({"role": "user", "content": prompt})
-                
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature
-                )
-                return response.choices[0].message.content.strip()
-                
-            except together.error.RateLimitError as e:
-                if attempt < self.max_retries - 1:
-                    wait_time = self.initial_retry_delay * (2 ** attempt)
-                    print(f"Rate limit hit. Retrying in {wait_time:.2f} seconds...")
-                    time.sleep(wait_time)
-                    continue
-                return f"Error: {str(e)}"
-            except Exception as e:
-                return f"Error: {str(e)}"
+        """Generate response from LLM"""
+        if not system_prompt:
+            system_prompt = "You are an intelligent data analyst agent. Provide direct, actionable analysis and answers about the data."
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.append({"role": "user", "content": prompt})
+        
+        response = self.client.chat.completions.create(
+            model="mistralai/Mixtral-8x7B-Instruct-v0.1",
+            messages=messages,
+            max_tokens=1024,
+            temperature=0.7,
+            top_p=0.7,
+            top_k=50,
+            repetition_penalty=1.1,
+            stop=['</s>', 'Human:', 'Assistant:']
+        )
+        
+        return response.choices[0].message.content.strip()
     
     def generate_visualization(self, data_description: str, visualization_type: str) -> str:
-        """Generate and execute plotting code"""
-        if not self.context_manager.current_dataset:
-            return None
+        """Generate visualization based on data description"""
+        # Create a temporary file for the plot
+        plot_path = f"temp_plot_{uuid.uuid4()}.png"
         
-        df = self.context_manager.current_data
-        prompt = f"""Given this data description: {data_description}
-        Generate Python code using matplotlib to create an appropriate visualization.
-        The code should:
-        1. Use the DataFrame 'df' that is already loaded
-        2. Create a clear and professional visualization
-        3. Include proper labels, title, and styling
-        4. Save the plot as a PNG file in the Graph_Plots folder
+        try:
+            # Generate Python code for visualization
+            code_prompt = f"""Generate Python code to create a {visualization_type} based on this description:
+            {data_description}
+            
+            The code should:
+            1. Use matplotlib or seaborn
+            2. Save the plot to '{plot_path}'
+            3. Be complete and executable
+            4. Handle any necessary data transformations
+            
+            Return only the Python code, no explanations."""
+            
+            code = self.generate_response(code_prompt, "You are a data visualization expert. Generate clean, efficient visualization code.")
+            
+            # Execute the code
+            exec(code)
+            
+            # Convert plot to base64
+            with open(plot_path, 'rb') as f:
+                base64_data = base64.b64encode(f.read()).decode()
+            
+            return f"data:image/png;base64,{base64_data}"
+            
+        except Exception as e:
+            raise Exception(f"Error generating visualization: {str(e)}")
         
-        IMPORTANT: The DataFrame columns are: {', '.join(df.columns)}
-        Use these EXACT column names in your code.
-        
-        Return ONLY the Python code, nothing else."""
-
-        plotting_code = self.generate_response(prompt)
-        
-        # Extract code from response
-        if "```python" in plotting_code:
-            plotting_code = plotting_code.split("```python")[1].split("```")[0].strip()
-        elif "```" in plotting_code:
-            plotting_code = plotting_code.split("```")[1].strip()
-        
-        # Execute code
-        namespace = {'df': df, 'plt': plt, 'np': np, 'pd': pd}
-        exec(plotting_code, namespace)
-        
-        # Save the plot
-        plot_path = os.path.join("Graph_Plots", "temp_plot.png")
-        plt.savefig(plot_path)
-        plt.close()
-        
-        # Convert to base64
-        with open(plot_path, "rb") as img_file:
-            base64_data = base64.b64encode(img_file.read()).decode('utf-8')
-        
-        # Clean up
-        if os.path.exists(plot_path):
-            os.remove(plot_path)
-        
-        return f"data:image/png;base64,{base64_data}"
+        finally:
+            # Clean up
+            if os.path.exists(plot_path):
+                os.remove(plot_path)
 
 
 # Main Intelligent Agent Class
@@ -297,7 +208,6 @@ class IntelligentAgent:
     def __init__(self, together_api_key: str):
         self.together_api_key = together_api_key
         self.context_manager = ContextManager()
-        self.intent_classifier = IntentClassifier(self.context_manager)
         self.llm_interface = LLMInterface(together_api_key, self.context_manager)
         self.file_processor = FileProcessor()
     
@@ -305,7 +215,6 @@ class IntelligentAgent:
         """Register new dataset with agent"""
         # Create a new session
         self.context_manager = ContextManager()
-        self.intent_classifier = IntentClassifier(self.context_manager)
         self.llm_interface = LLMInterface(self.together_api_key, self.context_manager)
         
         # Process and register the file
@@ -314,16 +223,14 @@ class IntelligentAgent:
     
     def process_query(self, user_query: str) -> Dict[str, Any]:
         """Process user query and generate response"""
-        # Classify intent and get response
-        intent, confidence = self.intent_classifier.classify_intent(user_query)
         current_data = self.context_manager.current_data
         
         # Generate context-aware prompt
-        context_prompt = self.intent_classifier.generate_context_prompt(user_query, intent)
+        context_prompt = f"User Query: {user_query}\n\n"
         
         # Add data context
         if isinstance(current_data, pd.DataFrame):
-            context_prompt += f"\nComplete Dataset Information:\n"
+            context_prompt += f"Complete Dataset Information:\n"
             context_prompt += f"Total Rows: {len(current_data)}\n"
             context_prompt += f"Columns: {', '.join(current_data.columns)}\n"
             context_prompt += f"Data Types:\n{current_data.dtypes.to_string()}\n"
@@ -349,17 +256,15 @@ class IntelligentAgent:
         
         # Handle visualization if needed
         visualization = None
-        if intent == IntentType.VISUALIZATION and isinstance(current_data, pd.DataFrame):
+        if isinstance(current_data, pd.DataFrame) and any(word in user_query.lower() for word in ['plot', 'chart', 'graph', 'visualize', 'show']):
             data_description = llm_response.split("Visualization:")[-1].strip()
             visualization = self.llm_interface.generate_visualization(data_description, "visualization")
         
         # Store conversation
-        self.context_manager.add_conversation(user_query, llm_response, intent.value)
+        self.context_manager.add_conversation(user_query, llm_response)
         
         return {
             'user_query': user_query,
-            'intent': intent.value,
-            'confidence': confidence,
             'llm_response': llm_response,
             'visualization': visualization
         }
@@ -374,26 +279,110 @@ class IntelligentAgent:
     
     def get_agent_status(self) -> Dict[str, Any]:
         """Get current agent status"""
-        context = self.context_manager.get_current_context()
-        status = {
-            'session_id': context['session_id'],
-            'current_dataset': context['current_dataset'],
-            'conversations': context['conversation_count']
+        return {
+            'session_id': self.context_manager.session_id,
+            'current_dataset': self.context_manager.current_dataset,
+            'conversation_count': len(self.context_manager.conversation_history)
         }
+
+    def get_column_types(self, dataset_info: dict) -> dict:
+        """
+        Analyze dataset and recommend appropriate data types for each column using LLM.
         
-        if self.context_manager.current_dataset:
-            file_info = self.file_processor.process_file(self.context_manager.current_dataset)
-            if file_info['type'] == 'dataframe':
-                status['file_type'] = 'dataframe'
-                status['shape'] = file_info['shape']
-                status['columns'] = file_info['columns']
-            elif file_info['type'] == 'text':
-                status['file_type'] = 'text'
-                status['word_count'] = file_info['word_count']
-            elif file_info['type'] == 'image':
-                status['file_type'] = 'image'
-                status['image_size'] = file_info['image_size']
+        Args:
+            dataset_info (dict): Dictionary containing:
+                - columns: List of column names
+                - sample_data: Dictionary of sample values for each column
+                - dtypes: Current data types of columns
+                - null_counts: Number of null values in each column
+                - unique_counts: Number of unique values in each column
         
-        return status
+        Returns:
+            dict: Mapping of column names to their recommended numpy/pandas data types
+        """
+        # Create a detailed prompt for the LLM
+        prompt = f"""You are a data type expert. Your task is to analyze the dataset information and recommend the most appropriate data type for each column.
+You must respond with ONLY a valid JSON object, nothing else.
+
+Consider these factors for each column:
+1. The nature of the data (numeric, text, date, etc.)
+2. The number of unique values (for categorical vs string decisions)
+3. The presence of null values
+4. The current data type
+5. The sample values
+
+Dataset Information:
+Columns: {dataset_info['columns']}
+Current Data Types: {dataset_info['dtypes']}
+Null Counts: {dataset_info['null_counts']}
+Unique Value Counts: {dataset_info['unique_counts']}
+Sample Data: {dataset_info['sample_data']}
+
+For each column, you must choose EXACTLY one of these data types:
+- int64: For any column containing only integers, including:
+  * Integer numbers
+  * Numeric categorical data (IDs, codes)
+  * Float numbers that are actually integers (e.g., 1.0, 2.0)
+  * Any column where all non-null values are integers
+- float64: For decimal numbers that are not integers
+- category: For non-numeric categorical data with few unique values (e.g., status, type, or any text-based categories)
+- datetime64[ns]: For date/time values
+- string: For text data with many unique values
+
+Important Rules:
+1. If a column contains only integers (even if it's categorical or currently float), use int64
+2. Only use category for non-numeric categorical data
+3. Use string for text data with many unique values
+4. Use float64 only for decimal numbers that are not integers
+5. Use datetime64[ns] for date/time values
+6. Check if float values are actually integers (e.g., 1.0, 2.0) and use int64 in such cases
+
+Your response must be a valid JSON object where:
+- Keys are the column names
+- Values are the recommended data types
+- No additional text or explanation
+- No markdown formatting
+- No code blocks
+
+Example of expected response format:
+{{
+    "column1": "int64",
+    "column2": "float64",
+    "column3": "category"
+}}
+
+Remember: Return ONLY the JSON object, nothing else.No Ok,understood,nothing else"""
+
+        # Get LLM's response
+        response = self.llm_interface.generate_response(prompt)
+        
+        try:
+            # Clean the response to ensure it's valid JSON
+            # Remove any markdown formatting or extra text
+            response = response.strip()
+            if response.startswith('```json'):
+                response = response[7:]
+            if response.endswith('```'):
+                response = response[:-3]
+            response = response.strip()
+            
+            # Parse the response as JSON
+            type_recommendations = json.loads(response)
+            
+            # Validate the recommendations
+            valid_types = {'int64', 'float64', 'category', 'datetime64[ns]', 'string'}
+            for col, dtype in type_recommendations.items():
+                if dtype not in valid_types:
+                    raise ValueError(f"Invalid data type recommendation: {dtype}")
+                if col not in dataset_info['columns']:
+                    raise ValueError(f"Column not found in dataset: {col}")
+            
+            return type_recommendations
+            
+        except json.JSONDecodeError as e:
+            print(f"Raw LLM response: {response}")  # Debug print
+            raise ValueError(f"Failed to parse LLM response as JSON: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Error processing type recommendations: {str(e)}")
 
 

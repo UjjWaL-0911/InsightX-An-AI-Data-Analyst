@@ -58,15 +58,12 @@ def process_dataset(file_processor: FileProcessor, data_preprocessor: DataPrepro
         
         # Preprocess dataframe
         df = file_info['data']
-        cleaned_df = data_preprocessor.preprocess_dataframe(df)
-        analysis = data_preprocessor.analyze_structure(cleaned_df)
+        cleaned_df, preproc_message = data_preprocessor.preprocess_dataframe(df)
         
         print("\nPreprocessing Summary:")
         print(f"Original shape: {df.shape}")
         print(f"Cleaned shape: {cleaned_df.shape}")
-        print(f"Numeric columns: {len(analysis['numeric_columns'])}")
-        print(f"Categorical columns: {len(analysis['categorical_columns'])}")
-        print(f"Datetime columns: {len(analysis['datetime_columns'])}")
+        print(preproc_message)
     else:
         print("Processing completed.")
     
@@ -82,7 +79,6 @@ def main():
 
         # Initialize processors
         file_processor = FileProcessor()
-        data_preprocessor = DataPreprocessor()
         
         # Get supported files
         supported_files = [f for f in os.listdir("Datasets") 
@@ -113,13 +109,18 @@ def main():
             except ValueError:
                 print("Please enter a valid number")
         
+        # Initialize agent first
+        print("\nInitializing agent...")
+        agent = IntelligentAgent(together_api_key=api_key)
+        
+        # Initialize data preprocessor with the agent
+        data_preprocessor = DataPreprocessor(agent=agent)
+        
         # Process selected file
         dataset_path = os.path.join("Datasets", selected_file)
         file_info = process_dataset(file_processor, data_preprocessor, dataset_path)
         
-        # Initialize agent
-        print("\nInitializing agent...")
-        agent = IntelligentAgent(together_api_key=api_key)
+        # Register dataset with agent
         agent.register_dataset(dataset_path, os.path.splitext(dataset_path)[1])
         print("New session created and dataset registered successfully")
         
@@ -194,7 +195,6 @@ def main():
                     for entry in history[-3:]:
                         print(f"\nTime: {entry['timestamp']}")
                         print(f"Query: {entry['user_query']}")
-                        print(f"Intent: {entry['intent']}")
                         print(f"Response: {entry['agent_response']}")
                         print("-" * 50)
                 else:

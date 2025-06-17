@@ -5,18 +5,24 @@ from agent_core import IntelligentAgent
 from file_processor import FileProcessor
 from data_preprocessor import DataPreprocessor
 import pandas as pd
-import matplotlib.pyplot as plt
-import base64
-from io import BytesIO
 
 # Set page config
 st.set_page_config(
-    page_title="InsightX - AI Data Analyst Agent",
+    page_title="InsightX - AI Data Analysis Agent",
     page_icon="📊",
-    layout="wide"
+    layout="centered"
 )
 
 # Initialize session state
+#Writing the if condtions for the session state is important because 
+# every time the app reruns in a single user's session,the session state is reset
+# so we need to check if the session state is already set and if not, we need to set it
+# this is important because if we don't do this, the app will crash
+# this is because the session state is not initialized and the app will try to access it
+# and it will crash
+#these if conditions will run only once because they are inserting the keys and setting their
+#to none. 
+
 if 'agent' not in st.session_state:
     st.session_state.agent = None
 if 'current_dataset' not in st.session_state:
@@ -27,7 +33,7 @@ if 'conversation_history' not in st.session_state:
     st.session_state.conversation_history = []
 
 # Load environment variables
-env_path = os.path.join("Configs", ".env")
+env_path = "Configs/.env"
 if os.path.exists(env_path):
     load_dotenv(env_path)
     TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
@@ -43,7 +49,7 @@ def initialize_agent():
 
 def process_dataset(file_path):
     """Process the selected dataset"""
-    success = False
+    success = False #Flags whether the entire process completed without errors. It's initialized to False and set to True only upon successful completion.
     message = "Unknown error during dataset processing."
     processed_data_output = None # Initialize processed_data_output
 
@@ -60,7 +66,7 @@ def process_dataset(file_path):
         if file_info['type'] == 'dataframe':
             df = file_info['data']
             # Preprocess the DataFrame for Streamlit compatibility
-            data_preprocessor = DataPreprocessor()
+            data_preprocessor = DataPreprocessor(agent=st.session_state.agent)  #passing the instance of the agent because there is a function get_column_types which requires llm recommendations
             processed_df, preproc_message = data_preprocessor.preprocess_dataframe(df)
             st.session_state.processed_data = processed_df
 
@@ -105,7 +111,7 @@ def main():
     
     # Sidebar for dataset selection and controls
     with st.sidebar:
-        st.header("Dataset Selection")
+        st.header("Dataset Selection",divider="rainbow")
         
         # Ensure agent is initialized if not already done and API key is present
         if st.session_state.agent is None and TOGETHER_API_KEY:
@@ -155,7 +161,7 @@ def main():
                 st.session_state.agent.save_session()
                 st.success("Session saved successfully!")
         
-        if st.button("Load Last Session"):
+        if st.button("Load Session"):
             if st.session_state.agent:
                 st.session_state.agent.context_manager.load_session()
                 st.success("Session loaded successfully!")
